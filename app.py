@@ -1,112 +1,114 @@
 # ===============================
-# CLEAN PDF REBUILDER (NO JS)
-# FULL GOOGLE COLAB SCRIPT
+# STREAMLIT PDF CLEANER (JS-FREE)
 # ===============================
 
-# ---------- Install dependencies ----------
-!pip install pymupdf reportlab pillow pikepdf
-
-# ---------- Upload PDF ----------
-from google.colab import files
-uploaded = files.upload()
-input_pdf = list(uploaded.keys())[0]
-print("Uploaded:", input_pdf)
-
-# ---------- Extract text & images ----------
+import streamlit as st
 import fitz
-import os
-
-doc = fitz.open(input_pdf)
-os.makedirs("images", exist_ok=True)
-
-pages = []
-
-for i, page in enumerate(doc):
-    text = page.get_text("text")
-    imgs = []
-
-    for img_index, img in enumerate(page.get_images(full=True)):
-        xref = img[0]
-        base = doc.extract_image(xref)
-        img_bytes = base["image"]
-        img_path = f"images/p{i}_{img_index}.png"
-
-        with open(img_path, "wb") as f:
-            f.write(img_bytes)
-
-        imgs.append(img_path)
-
-    pages.append({
-        "text": text,
-        "images": imgs
-    })
-
-# ---------- Build SAFE PDF ----------
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Image as RLImage, Spacer
+from PIL import Image as PILImage
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Image as RLImage, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
-from PIL import Image as PILImage
-
-output_pdf = "clean_fixed.pdf"
-styles = getSampleStyleSheet()
-story = []
-
-def compress_image(path):
-    img = PILImage.open(path)
-    img.thumbnail((1200, 1200))
-    new_path = path.replace(".png", "_small.jpg")
-    img.save(new_path, "JPEG", quality=70)
-    return new_path
-
-for page in pages:
-    if page["text"].strip():
-        for line in page["text"].split("\n"):
-            story.append(Paragraph(line, styles["Normal"]))
-        story.append(Spacer(1, 0.25 * inch))
-
-    for img_path in page["images"]:
-        small = compress_image(img_path)
-        img = RLImage(small)
-        img._restrictSize(5.5 * inch, 7 * inch)
-        story.append(img)
-        story.append(Spacer(1, 0.3 * inch))
-
-doc = SimpleDocTemplate(
-    output_pdf,
-    pagesize=A4,
-    leftMargin=1 * inch,
-    rightMargin=1 * inch,
-    topMargin=1 * inch,
-    bottomMargin=1 * inch
-)
-
-doc.build(story)
-
-# ---------- REMOVE JS / ACTIONS / METADATA (CORRECT) ----------
 import pikepdf
+import tempfile
+import os
 
-with pikepdf.open(output_pdf) as pdf:
-    root = pdf.Root
+st.title("PDF Cleaner – Remove JS & Actions")
 
-    # Remove Names tree (JS lives here)
-    if "/Names" in root:
-        del root["/Names"]
+# ---------- Upload PDF ----------
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+if uploaded_file is not None:
+    st.write("Processing...")
 
-    # Remove automatic actions
-    if "/OpenAction" in root:
-        del root["/OpenAction"]
+    # Save uploaded PDF temporarily
+    temp_dir = tempfile.mkdtemp()
+    input_pdf_path = os.path.join(temp_dir, "input.pdf")
+    with open(input_pdf_path, "wb") as f:
+        f.write(uploaded_file.read())
 
-    if "/AA" in root:
-        del root["/AA"]
+    # ---------- Extract text & images ----------
+    doc = fitz.open(input_pdf_path)
+    img_dir = os.path.join(temp_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
 
-    # Remove ALL metadata safely
-    for key in list(pdf.docinfo.keys()):
-        del pdf.docinfo[key]
+    pages = []
+    for i, page in enumerate(doc):
+        text = page.get_text("text")
+        imgs = []
 
-    pdf.save("clean_fixed_nojs.pdf")
+        for img_index, img in enumerate(page.get_images(full=True)):
+            xref = img[0]
+            base = doc.extract_image(xref)
+            img_bytes = base["image"]
+            img_path = os.path.join(img_dir, f"p{i}_{img_index}.png")
+            with open(img_path, "wb") as f:
+                f.write(img_bytes)
+            imgs.append(img_path)
 
-print("PDF cleaned successfully")
+        pages.append({"text": text, "images": imgs})
 
-# ---------- Download ----------
-files.download("clean_fixed_nojs.pdf")
+    # ---------- Build new PDF ----------
+    output_pdf_path = os.path.join(temp_dir, "clean_fixed.pdf")
+    styles = getSampleStyleSheet()
+    story = []
+
+    def compress_image(path):
+        img = PILImage.open(path)
+        img.thumbnail((1200, 1200))
+        new_path = path.replace(".png", "_small.jpg")
+        img.save(new_path, "JPEG", quality=70)
+        return new_path
+
+    for page in pages:
+        if page["text"].strip():
+            for line in page["text"].split("\n"):
+                story.append(Paragraph(line, styles["Normal"]))
+            story.append(Spacer(1, 0.25 * inch))
+
+        for img_path in page["images"]:
+            small = compress_image(img_path)
+            img = RLImage(small)
+            img._restrictSize(5.5 * inch, 7 * inch)
+            story.append(img)
+            story.append(Spacer(1, 0.3 * inch))
+
+        story.append(PageBreak())
+
+    doc_r = SimpleDocTemplate(
+        output_pdf_path,
+        pagesize=A4,
+        leftMargin=1 * inch,
+        rightMargin=1 * inch,
+        topMargin=1 * inch,
+        bottomMargin=1 * inch
+    )
+
+    doc_r.build(story)
+
+    # ---------- Remove JS / Actions ----------
+    final_pdf_path = os.path.join(temp_dir, "clean_fixed_nojs.pdf")
+    with pikepdf.open(output_pdf_path) as pdf:
+        root = pdf.Root
+
+        if "/Names" in root:
+            del root["/Names"]
+        if "/OpenAction" in root:
+            del root["/OpenAction"]
+        if "/AA" in root:
+            del root["/AA"]
+
+        for key in list(pdf.docinfo.keys()):
+            del pdf.docinfo[key]
+
+        pdf.save(final_pdf_path)
+
+    # ---------- Provide download ----------
+    with open(final_pdf_path, "rb") as f:
+        st.download_button(
+            label="Download Clean PDF",
+            data=f.read(),
+            file_name="clean_fixed_nojs.pdf",
+            mime="application/pdf"
+        )
+
+    st.success("PDF cleaned successfully! ✅")
